@@ -15,14 +15,13 @@ public class IosGalleryPickerPlugin: NSObject, FlutterPlugin, UINavigationContro
     var result: FlutterResult? = nil
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-        FileManager.default.clearTmpDirectory()
+        self.arguments = call.arguments as? NSDictionary
+        self.result = result
 
         switch call.method {
-            case "imagesPicker":
-                self.arguments = call.arguments as? NSDictionary
-                self.result = result
+            case "imagesPickerAsset":
                 self.setupImageConfig()
-                self.imagesPicker()
+                self.imagesPickerAsset()
 
             default:
                 result(FlutterMethodNotImplemented)
@@ -34,9 +33,15 @@ public class IosGalleryPickerPlugin: NSObject, FlutterPlugin, UINavigationContro
 
         config.customAlertWhenNoAuthority { type in
             if (type == .camera) {
-                var message = "Go to settings → enable camera access."
-                if var appName = Bundle.main.infoDictionary?[kCFBundleNameKey as String] {
-                    message = "Go to settings → “\(appName)” and enable camera access."
+                var message = "Go to “Settings” and enable camera access."
+
+                if var appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") {
+                    if #available(iOS 18.0, *) {
+                        message = "Go to “Settings” → “Apps” → “\(appName)” and enable camera access."
+                    }
+                    else {
+                        message = "Go to “Settings” → “\(appName)” and enable camera access."
+                    }
                 }
 
                 self.showAlertPermission(
@@ -63,26 +68,35 @@ public class IosGalleryPickerPlugin: NSObject, FlutterPlugin, UINavigationContro
         uiConfig.columnCount = 5
     }
 
-    private func imagesPicker() {
+    // MARK: Asset select.
+    private func imagesPickerAsset() { // checked
+        let deliveryMode = arguments?["deliveryMode"] as? Int ?? 0
         let ps = ZLPhotoPreviewSheet()
         let keyWindow = UIApplication.shared.windows.filter {$0.isKeyWindow}.first
 
         ps.selectImageBlock = { [weak self] results, isOriginal in
             let group = DispatchGroup()
+            let selectedAssets = results.map { $0.asset }
             var data: Array<NSDictionary> = Array<NSDictionary>()
 
-            for result in results {
+            for asset in selectedAssets {
                 group.enter()
 
-                let asset = result.asset
-                let image = result.image
                 let fileName = self!.getFileName(asset:asset)
-                let format = NSString(string: fileName).pathExtension.lowercased()
+                let localUrl = self!.getURL(fileName: fileName)
 
-                if var media = self!.copyUIImage(image, fileName: fileName, format: format, id: asset.localIdentifier ?? "") {
+                var media = [
+                    "id": asset.localIdentifier ?? "",
+                    "name": fileName,
+                    "width": Int(asset.pixelWidth) as NSNumber,
+                    "height": Int(asset.pixelHeight) as NSNumber,
+                ] as [String : Any]
+
+                self!.writePhoto(asset:asset, url:localUrl, deliveryMode:deliveryMode, completionBlock:{(url) in
+                    media["path"] = url.path
                     data.append(NSDictionary(dictionary: media))
-                }
-                group.leave();
+                    group.leave();
+                })
             }
 
             group.notify(queue: .main){
@@ -104,49 +118,57 @@ public class IosGalleryPickerPlugin: NSObject, FlutterPlugin, UINavigationContro
         }
     }
 
-    private func copyUIImage(_ image: UIImage, fileName: String, format: String? = nil, id: String) -> [String : Any]? {
-        var data: Data?
+    private func writePhoto(asset: PHAsset, url: URL, deliveryMode: Int = 0, completionBlock:@escaping ((URL) -> Void)) { // checked
+        let option = PHImageRequestOptions()
+        if asset.zl.isGif {
+            option.version = .original
+        }
+        option.isNetworkAccessAllowed = true
+        option.resizeMode = .fast
 
-        if "png" == format {
-            data = image.pngData()
-        } else {
-            data = image.jpegData(compressionQuality: CGFloat(0.9))
+        if (deliveryMode == 0) {
+            option.deliveryMode = .opportunistic
+        }
+        else if (deliveryMode == 1) {
+            option.deliveryMode = .highQualityFormat
+        }
+        else if (deliveryMode == 2) {
+            option.deliveryMode = .fastFormat
         }
 
-        guard let data = data else {
-            return nil
+        let resultHandler: (Data?) -> Void = { data in
+            do {
+                try data?.write(to: url)
+                DispatchQueue.main.async {
+                    completionBlock(url)
+                }
+            }
+            catch {
+                print("Error saving image: \(error)")
+            }
         }
 
-        /*let fileManager = FileManager.default
-        let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let fileURL = documentsDirectory.appendingPathComponent(fileName)*/
-        let fileURL = getURL(fileName: fileName)
-
-        do {
-            try data.write(to: fileURL)
-            let media = [
-                "id": id,
-                "path": fileURL.path,
-                "name": fileName,
-                "width": Int(image.size.width) as NSNumber,
-                "height": Int(image.size.height) as NSNumber,
-            ] as [String : Any]
-            return media
+        if #available(iOS 13.0, *) {
+            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: option) { data, _, _, info in
+                resultHandler(data)
+            }
         }
-        catch {
-            print("Error saving image: \(error)")
-            return nil
+        else {
+            PHImageManager.default().requestImageData(for: asset, options: option) { data, _, _, info in
+                resultHandler(data)
+            }
         }
     }
 
-    private func getStringDate() -> String {
+    // MARK: Support method.
+    private func getStringDate(dateFormat:String = "HH_mm_ss_SSSS") -> String { // checked
         let date = Date()
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH_mm_ss_SSSS"
+        formatter.dateFormat = dateFormat
         return formatter.string(from: date)
     }
 
-    private func getFileName(asset: PHAsset) -> String {
+    private func getFileName(asset: PHAsset) -> String { // checked
         var fileName = getStringDate()+".JPG"
         let resources = PHAssetResource.assetResources(for: asset)
 
@@ -160,16 +182,18 @@ public class IosGalleryPickerPlugin: NSObject, FlutterPlugin, UINavigationContro
         return fileName
     }
 
-    private func getURL(fileName:String) -> URL {
+    private func getURL(fileName:String) -> URL { // checked
+        let name = "\(UUID().uuidString)-\(fileName)"
+
         if #available(iOS 10.0, *) {
-            return FileManager.default.temporaryDirectory.appendingPathComponent("\(fileName)")
+            return FileManager.default.temporaryDirectory.appendingPathComponent("\(name)")
         }
         else {
-            return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("\(fileName)")
+            return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("\(name)")
         }
     }
 
-    private func showAlertPermission(title: String, message: String) {
+    private func showAlertPermission(title: String, message: String) { // checked
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         let settingsAction = UIAlertAction(title: "Setting", style: .default) { (_) -> Void in
             guard let settingsUrl = URL(string: UIApplication.openSettingsURLString) else {
@@ -187,6 +211,15 @@ public class IosGalleryPickerPlugin: NSObject, FlutterPlugin, UINavigationContro
         alert.preferredAction = settingsAction
 
         UIApplication.topViewController()?.present(alert, animated: true, completion: nil)
+    }
+
+    private func getAsset(localIdentifier: String?) -> PHAsset? {
+        guard let id = localIdentifier else {
+            return nil
+        }
+
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
+        return result.firstObject
     }
 }
 
