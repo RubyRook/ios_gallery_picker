@@ -61,6 +61,7 @@ class GalleryPicker {
     bool allowSelectGif = true,
     bool enableCamera = false,
     int maxSelectCount = 1,
+    int columnCount = 4,
     DeliveryMode deliveryMode = DeliveryMode.opportunistic,
   })
   async {
@@ -68,6 +69,7 @@ class GalleryPicker {
       'allowSelectGif':allowSelectGif,
       'allowTakePhotoInLibrary':enableCamera,
       'maxSelectCount':maxSelectCount,
+      'columnCount':columnCount,
       'deliveryMode':deliveryMode.index,
     };
 

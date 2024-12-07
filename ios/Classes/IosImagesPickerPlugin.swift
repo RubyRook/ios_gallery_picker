@@ -65,7 +65,7 @@ public class IosGalleryPickerPlugin: NSObject, FlutterPlugin, UINavigationContro
         config.allowPreviewPhotos = false
 
         let uiConfig = ZLPhotoUIConfiguration.default()
-        uiConfig.columnCount = 5
+        uiConfig.columnCount = arguments?["columnCount"] as? Int ?? 5
     }
 
     // MARK: Asset select.
